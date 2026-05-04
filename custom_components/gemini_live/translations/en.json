@@ -13,9 +13,10 @@
       },
       "configure": {
         "title": "Configuration",
-        "description": "Configure the Gemini Live settings.",
+        "description": "Configure the Gemini Live settings. Model options are refreshed from the Gemini API when possible.",
         "data": {
           "model": "Model",
+          "custom_model": "Custom Model",
           "voice": "Voice",
           "instructions": "System Instructions",
           "temperature": "Temperature",
@@ -26,6 +27,7 @@
         },
         "data_description": {
           "model": "The Gemini model to use for live conversations",
+          "custom_model": "Optional model id to use instead of the selected model, such as gemini-3.1-flash-live-preview",
           "voice": "The voice to use for audio responses",
           "instructions": "System instructions for the AI assistant",
           "temperature": "Controls randomness in responses (0.0-2.0)",
@@ -95,15 +97,19 @@
     "step": {
       "init": {
         "title": "Options",
-        "description": "Configure Gemini Live options.",
+        "description": "Configure Gemini Live options. Model options are refreshed from the Gemini API when possible.",
         "data": {
           "model": "Model",
+          "custom_model": "Custom Model",
           "voice": "Voice",
           "instructions": "System Instructions",
           "temperature": "Temperature",
           "enable_google_search": "Enable Google Search",
           "enable_affective_dialog": "Enable Affective Dialog",
           "enable_proactive_audio": "Enable Proactive Audio"
+        },
+        "data_description": {
+          "custom_model": "Optional model id to use instead of the selected model, such as gemini-3.1-flash-live-preview"
         }
       },
       "mcp_menu": {

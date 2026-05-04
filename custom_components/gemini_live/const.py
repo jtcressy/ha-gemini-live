@@ -6,6 +6,7 @@ DOMAIN: Final = "gemini_live"
 # Configuration keys
 CONF_API_KEY: Final = "api_key"
 CONF_MODEL: Final = "model"
+CONF_CUSTOM_MODEL: Final = "custom_model"
 CONF_VOICE: Final = "voice"
 CONF_INSTRUCTIONS: Final = "instructions"
 CONF_MCP_SERVERS: Final = "mcp_servers"
@@ -68,6 +69,7 @@ MEDIA_RESOLUTIONS: Final = [
 
 # Available models
 MODELS: Final = [
+    "gemini-3.1-flash-live-preview",
     "gemini-2.5-flash-native-audio-preview-12-2025",
     "gemini-2.5-flash-preview-native-audio-dialog",
     "gemini-2.0-flash-live-001",
