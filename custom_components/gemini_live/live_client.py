@@ -177,6 +177,11 @@ class GeminiLiveClient:
         """Return connection status."""
         return self._connected
 
+    def _uses_gemini_31_live_model(self) -> bool:
+        """Return whether the configured model is Gemini 3.1 Flash Live."""
+        model = self._session_config.model.strip().removeprefix("models/")
+        return model.startswith("gemini-3.1-flash-live")
+
     def get_google_ws_id(self) -> int | None:
         """Get the current Google session ID (changes on reconnect).
         
@@ -560,6 +565,8 @@ class GeminiLiveClient:
 
     def _build_config(self) -> types.LiveConnectConfig:
         """Build LiveConnectConfig for the session."""
+        supports_native_audio_extras = not self._uses_gemini_31_live_model()
+
         # Build speech config
         speech_config = types.SpeechConfig(
             voice_config=types.VoiceConfig(
@@ -632,12 +639,28 @@ class GeminiLiveClient:
             config_kwargs["input_audio_transcription"] = {}
 
         # Add affective dialog (requires v1alpha API)
-        if self._session_config.enable_affective_dialog:
+        if (
+            self._session_config.enable_affective_dialog
+            and supports_native_audio_extras
+        ):
             config_kwargs["enable_affective_dialog"] = True
+        elif self._session_config.enable_affective_dialog:
+            _LOGGER.warning(
+                "Affective dialog is not supported by %s; ignoring option",
+                self._session_config.model,
+            )
 
         # Add proactive audio (requires v1alpha API)
-        if self._session_config.enable_proactive_audio:
+        if (
+            self._session_config.enable_proactive_audio
+            and supports_native_audio_extras
+        ):
             config_kwargs["proactivity"] = {"proactive_audio": True}
+        elif self._session_config.enable_proactive_audio:
+            _LOGGER.warning(
+                "Proactive audio is not supported by %s; ignoring option",
+                self._session_config.model,
+            )
 
         # Add session resumption for long-running sessions
         if self._session_config.enable_session_resumption:
@@ -672,9 +695,18 @@ class GeminiLiveClient:
         try:
             # Determine API version - v1alpha needed for ephemeral tokens, affective dialog, proactive audio
             api_version = "v1beta"
-            if (self._session_config.enable_affective_dialog or 
-                self._session_config.enable_proactive_audio or
-                self._session_config.ephemeral_token):
+            supports_native_audio_extras = not self._uses_gemini_31_live_model()
+            if (
+                (
+                    self._session_config.enable_affective_dialog
+                    and supports_native_audio_extras
+                )
+                or (
+                    self._session_config.enable_proactive_audio
+                    and supports_native_audio_extras
+                )
+                or self._session_config.ephemeral_token
+            ):
                 api_version = "v1alpha"
 
             # Use ephemeral token if provided, otherwise use API key

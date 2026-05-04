@@ -16,6 +16,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_API_KEY,
+    CONF_CUSTOM_MODEL,
     CONF_ENABLE_AFFECTIVE_DIALOG,
     CONF_ENABLE_GOOGLE_SEARCH,
     CONF_ENABLE_HA_TOOLS,
@@ -52,19 +53,140 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_MODELS_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+_LIVE_MODEL_GENERATION_METHODS = {"bidigeneratecontent"}
+_LIVE_MODEL_NAME_HINTS = ("live", "native-audio")
+
+
+def _normalize_model_name(model_name: str) -> str:
+    """Normalize model ids returned by the API for use with the SDK."""
+    return model_name.removeprefix("models/")
+
+
+def _clean_model_name(value: Any) -> str:
+    """Return a stripped model id, accepting either API or SDK format."""
+    if value is None:
+        return ""
+    return _normalize_model_name(str(value).strip())
+
+
+def _merge_model_options(*model_groups: list[str]) -> list[str]:
+    """Merge model option lists while preserving order."""
+    options: list[str] = []
+    for model_group in model_groups:
+        for model in model_group:
+            model_name = _clean_model_name(model)
+            if model_name and model_name not in options:
+                options.append(model_name)
+    return options
+
+
+def _is_live_model(model: dict[str, Any]) -> bool:
+    """Return whether a model list entry looks usable with the Live API."""
+    model_name = _clean_model_name(model.get("name")).lower()
+    generation_methods = {
+        str(method).lower()
+        for method in model.get("supportedGenerationMethods") or []
+    }
+
+    return bool(generation_methods & _LIVE_MODEL_GENERATION_METHODS) or any(
+        hint in model_name for hint in _LIVE_MODEL_NAME_HINTS
+    )
+
+
+async def async_get_available_models(
+    hass: HomeAssistant, api_key: str
+) -> list[str] | None:
+    """Fetch available Live API model ids from Google."""
+    session = async_get_clientsession(hass)
+    models: list[str] = []
+    page_token: str | None = None
+
+    while True:
+        params = {"key": api_key}
+        if page_token:
+            params["pageToken"] = page_token
+
+        try:
+            async with session.get(_MODELS_API_URL, params=params) as response:
+                if response.status != 200:
+                    return None
+                payload = await response.json(content_type=None)
+        except (aiohttp.ClientError, ValueError):
+            return None
+
+        if not isinstance(payload, dict):
+            return _merge_model_options(models)
+
+        models.extend(
+            _clean_model_name(model.get("name"))
+            for model in payload.get("models", [])
+            if isinstance(model, dict) and _is_live_model(model)
+        )
+
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+
+    return _merge_model_options(models)
+
+
+def _model_options(available_models: list[str], selected_model: str) -> list[str]:
+    """Build model options, preserving custom selections already in use."""
+    selected_model = _clean_model_name(selected_model) or DEFAULT_MODEL
+    return _merge_model_options([selected_model], available_models, MODELS)
+
+
+def _model_selector_config(options: list[str]) -> selector.SelectSelectorConfig:
+    """Build a model selector config, allowing custom values when supported."""
+    try:
+        return selector.SelectSelectorConfig(
+            options=options,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+            custom_value=True,
+        )
+    except TypeError:
+        # Older Home Assistant versions do not support custom_value. The
+        # separate custom model field below still allows arbitrary models.
+        return selector.SelectSelectorConfig(
+            options=options,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+
+
+def _model_schema_fields(
+    selected_model: str, available_models: list[str]
+) -> dict[Any, Any]:
+    """Return the model selector plus an optional custom-model override."""
+    selected_model = _clean_model_name(selected_model) or DEFAULT_MODEL
+    known_models = _merge_model_options(available_models, MODELS)
+    custom_model_default = "" if selected_model in known_models else selected_model
+
+    return {
+        vol.Optional(CONF_MODEL, default=selected_model): selector.SelectSelector(
+            _model_selector_config(_model_options(available_models, selected_model))
+        ),
+        vol.Optional(
+            CONF_CUSTOM_MODEL, default=custom_model_default
+        ): selector.TextSelector(selector.TextSelectorConfig()),
+    }
+
+
+def _resolve_model(
+    user_input: dict[str, Any], default_model: str = DEFAULT_MODEL
+) -> str:
+    """Resolve the selected model, letting a custom value override the dropdown."""
+    custom_model = _clean_model_name(user_input.get(CONF_CUSTOM_MODEL))
+    if custom_model:
+        return custom_model
+
+    selected_model = _clean_model_name(user_input.get(CONF_MODEL))
+    return selected_model or default_model
+
 
 async def validate_api_key(hass: HomeAssistant, api_key: str) -> bool:
     """Validate the API key by attempting a simple API call."""
-    session = async_get_clientsession(hass)
-    
-    # Test the API key with a simple models list request
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    
-    try:
-        async with session.get(url) as response:
-            return response.status == 200
-    except aiohttp.ClientError:
-        return False
+    return await async_get_available_models(hass, api_key) is not None
 
 
 class GeminiLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -77,6 +199,7 @@ class GeminiLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._api_key: str | None = None
         self._config: dict[str, Any] = {}
         self._mcp_servers: list[dict[str, Any]] = []
+        self._available_models: list[str] = list(MODELS)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -86,9 +209,11 @@ class GeminiLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             api_key = user_input[CONF_API_KEY]
+            available_models = await async_get_available_models(self.hass, api_key)
 
-            if await validate_api_key(self.hass, api_key):
+            if available_models is not None:
                 self._api_key = api_key
+                self._available_models = _merge_model_options(available_models, MODELS)
                 return await self.async_step_configure()
             else:
                 errors["base"] = "invalid_auth"
@@ -121,12 +246,7 @@ class GeminiLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Optional(CONF_NAME, default="Gemini Live"): str,
-                    vol.Optional(CONF_MODEL, default=DEFAULT_MODEL): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=MODELS,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
+                    **_model_schema_fields(DEFAULT_MODEL, self._available_models),
                     vol.Optional(CONF_VOICE, default=DEFAULT_VOICE): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=VOICES,
@@ -381,7 +501,7 @@ class GeminiLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Create the config entry."""
         data = {
             CONF_API_KEY: self._api_key,
-            CONF_MODEL: self._config.get(CONF_MODEL, DEFAULT_MODEL),
+            CONF_MODEL: _resolve_model(self._config),
             CONF_VOICE: self._config.get(CONF_VOICE, DEFAULT_VOICE),
             CONF_INSTRUCTIONS: self._config.get(CONF_INSTRUCTIONS, DEFAULT_INSTRUCTIONS),
             CONF_TEMPERATURE: self._config.get(CONF_TEMPERATURE, DEFAULT_TEMPERATURE),
@@ -415,51 +535,57 @@ class GeminiLiveOptionsFlow(config_entries.OptionsFlow):
         """Initialize options flow."""
         self._mcp_servers: list[dict[str, Any]] = []
         self._editing_server_index: int | None = None
+        self._available_models: list[str] = list(MODELS)
+        self._model_fetch_attempted = False
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage the options."""
         errors: dict[str, str] = {}
+        current_config = {**self.config_entry.data, **self.config_entry.options}
 
         # Initialize MCP servers from config entry on first call
         if not self._mcp_servers:
-            current_config = {**self.config_entry.data, **self.config_entry.options}
             self._mcp_servers = list(
                 current_config.get(CONF_MCP_SERVERS, [])
             )
 
+        if not self._model_fetch_attempted:
+            self._model_fetch_attempted = True
+            api_key = current_config.get(CONF_API_KEY)
+            if api_key:
+                available_models = await async_get_available_models(self.hass, api_key)
+                if available_models is not None:
+                    self._available_models = _merge_model_options(
+                        available_models, MODELS
+                    )
+
         if user_input is not None:
             # Save main settings and go to MCP menu
             self._main_config = {
-                CONF_MODEL: user_input.get(CONF_MODEL, DEFAULT_MODEL),
+                CONF_MODEL: _resolve_model(
+                    user_input, current_config.get(CONF_MODEL, DEFAULT_MODEL)
+                ),
                 CONF_VOICE: user_input.get(CONF_VOICE, DEFAULT_VOICE),
                 CONF_INSTRUCTIONS: user_input.get(CONF_INSTRUCTIONS, DEFAULT_INSTRUCTIONS),
                 CONF_TEMPERATURE: user_input.get(CONF_TEMPERATURE, DEFAULT_TEMPERATURE),
                 CONF_ENABLE_GOOGLE_SEARCH: user_input.get(CONF_ENABLE_GOOGLE_SEARCH, True),
-                    CONF_ENABLE_HA_TOOLS: user_input.get(CONF_ENABLE_HA_TOOLS, True),
-                    CONF_ENABLE_CONTEXT_WINDOW_COMPRESSION: user_input.get(CONF_ENABLE_CONTEXT_WINDOW_COMPRESSION, True),
+                CONF_ENABLE_HA_TOOLS: user_input.get(CONF_ENABLE_HA_TOOLS, True),
+                CONF_ENABLE_CONTEXT_WINDOW_COMPRESSION: user_input.get(CONF_ENABLE_CONTEXT_WINDOW_COMPRESSION, True),
                 CONF_ENABLE_PERSONALIZATION: user_input.get(CONF_ENABLE_PERSONALIZATION, False),
                 CONF_ENABLE_AFFECTIVE_DIALOG: user_input.get(CONF_ENABLE_AFFECTIVE_DIALOG, False),
                 CONF_ENABLE_PROACTIVE_AUDIO: user_input.get(CONF_ENABLE_PROACTIVE_AUDIO, False),
             }
             return await self.async_step_mcp_menu()
 
-        current_config = {**self.config_entry.data, **self.config_entry.options}
+        current_model = current_config.get(CONF_MODEL, DEFAULT_MODEL)
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_MODEL,
-                        default=current_config.get(CONF_MODEL, DEFAULT_MODEL),
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=MODELS,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
+                    **_model_schema_fields(current_model, self._available_models),
                     vol.Optional(
                         CONF_VOICE,
                         default=current_config.get(CONF_VOICE, DEFAULT_VOICE),

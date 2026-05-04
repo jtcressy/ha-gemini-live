@@ -50,12 +50,12 @@ See the Gemini-specific documentation for additional setup details:
 Core options exposed in the integration UI or via YAML when applicable:
 
 - `api_key` / `google_api_key`: Your Google AI key for Gemini
-- `model`: Gemini model (example: `gemini-2.0-flash-exp`)
+- `model`: Gemini Live model (the UI refreshes Live-capable model options from the Gemini API when possible; example: `gemini-3.1-flash-live-preview`)
 - `voice`: Voice name (example: `Puck`)
 - `ephemeral_token` (optional): Use for client-side auth
 - `enable_session_resumption`: true/false
-- `enable_affective_dialog`: true/false (v1alpha)
-- `enable_proactive_audio`: true/false (v1alpha)
+- `enable_affective_dialog`: true/false (v1alpha; ignored for Gemini 3.1 Flash Live)
+- `enable_proactive_audio`: true/false (v1alpha; ignored for Gemini 3.1 Flash Live)
 
 Example minimal settings (UI-oriented):
 
@@ -93,7 +93,8 @@ For advanced features (session resumption handles, proactive audio, image inputs
 2. Search for "Gemini Live"
 3. Enter your Google AI API key
 4. Configure the settings:
-   - **Model**: Select the model (default: `gemini-2.0-flash-exp`)
+   - **Model**: Select a Live API model refreshed from the Gemini API when possible (default: `gemini-2.5-flash-native-audio-preview-12-2025`)
+   - **Custom Model**: Optionally enter any model id, such as `gemini-3.1-flash-live-preview`, to override the dropdown
    - **Voice**: Choose the voice for audio responses
    - **Instructions**: Custom system instructions
 
