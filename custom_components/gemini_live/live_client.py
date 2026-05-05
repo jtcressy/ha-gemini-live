@@ -1768,9 +1768,7 @@ class GeminiLiveClient:
         response_future: asyncio.Future[LiveResponse] = asyncio.get_event_loop().create_future()
         self._response_futures[self._current_response.id] = response_future
 
-        # Send text using send_client_content (official API method)
-        send_client_content = cast(Callable[..., Awaitable[Any]], getattr(self._session, "send_client_content"))
-        turns_payload = {"role": "user", "parts": [{"text": text}]}
+        turns_payload = [{"role": "user", "parts": [{"text": text}]}]
         # Install frame logger to capture what's actually being sent
         try:
             await self._install_ws_frame_logger(duration=5)
@@ -1783,10 +1781,17 @@ class GeminiLiveClient:
         except Exception:
             payload_dump = None
             payload_bytes = 0
-        _LOGGER.debug("send_text: sending turns bytes=%d sample=%s", payload_bytes, payload_dump[:512] if payload_dump else "<dump-failed>")
+        send_client_content = cast(
+            Callable[..., Awaitable[Any]], getattr(self._session, "send_client_content")
+        )
+        _LOGGER.debug(
+            "send_text: sending turns bytes=%d sample=%s",
+            payload_bytes,
+            payload_dump[:512] if payload_dump else "<dump-failed>",
+        )
         await send_client_content(
             turns=turns_payload,
-            turn_complete=turn_complete
+            turn_complete=turn_complete,
         )
 
         # Wait for response with timeout
